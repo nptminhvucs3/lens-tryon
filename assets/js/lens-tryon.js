@@ -9,13 +9,18 @@
   var CFG = window.LensTryOnConfig || {};
   var TUNE = Object.assign({
     irisMM: 11.8,          // đường kính mống mắt trung bình (mm) – để quy đổi GDIA sản phẩm sang tỉ lệ
-    maxScale: 1.12,        // giới hạn lens to hơn mống mắt (tránh tràn tròng trắng)
-    irisFit: 1.06,         // MediaPipe ước lượng mống mắt hơi nhỏ -> phóng nhẹ để lens phủ kín, không hở viền mắt thật
+    maxScale: 1.04,        // giới hạn lens to hơn mống mắt – lớn hơn sẽ lộ viền tối trên tròng trắng (trông giả)
+    irisFit: 1.04,         // MediaPipe ước lượng mống mắt hơi nhỏ -> phóng nhẹ để lens phủ kín, không hở viền mắt thật
+    edgeSoft: 0.14,        // độ rộng vùng mép lens hoà dần vào mắt thật (theo bán kính) – hết viền cứng
+    limbal: 0.12,          // độ tối viền ngoài mống mắt (vòng limbal tự nhiên, rất nhẹ)
+    lidShade: 0.16,        // bóng mí trên đổ xuống mống mắt
+    autoOpacity: 1,        // 1 = tự tính độ đậm tự nhiên theo màu lens + ánh sáng
+    beauty: 0.6,           // 0–1: làm mịn da (0 = tắt)
     // Khử rung kiểu "vùng chết": dịch chuyển nhỏ hơn ngưỡng bị dập, lớn hơn đi thẳng (không trễ)
     irisJitter: 0.06,      // ngưỡng rung tâm mống mắt (theo bán kính mống mắt)
     meshJitter: 0.006,     // ngưỡng rung viền mí (theo độ rộng mắt)
     lidExpand: 0.035,      // nới viền mí MediaPipe ra ngoài (theo độ rộng mắt) – tránh lẹm
-    lidFeather: 0.04,      // độ mềm mép mí
+    lidFeather: 0.06,      // độ mềm mép mí (mép mí thật có mi & bóng, không phải đường cắt sắc)
     lidLuma: 1.0,          // 0–1: cắt theo mép mí thật dựa vào độ sáng ảnh (da sáng, mống mắt tối)
     gazeShare: 0.5,        // 0–1: hoà hướng nhìn 2 mắt (2 mắt luôn nhìn cùng hướng) -> 1 mắt nhận diện lỗi không làm lens trôi
     opacityDefault: 0.75,  // vị trí mặc định thanh "Độ đậm"
@@ -44,6 +49,7 @@
     tooFar: 'Lại gần camera hơn một chút',
     compare: 'Giữ để so sánh',
     capture: 'Chụp ảnh',
+    beauty: 'Làm mịn da',
     addToCart: 'Thêm vào giỏ',
     adding: 'Đang thêm…',
     added: 'Đã thêm vào giỏ hàng',
@@ -211,11 +217,34 @@
       var c = this.eyes[i].c.f(C2, Math.max(0.35, r * TUNE.irisJitter));
       out.push({
         cx: c[0], cy: c[1], ux: g.ux, uy: g.uy, vx: g.vx, vy: g.vy, ru: r, rv: rv,
-        poly: g.poly, D: g.D, fade: smoothstep(0.09, 0.16, g.open)
+        poly: smoothPoly(g.poly), D: g.D, fade: smoothstep(0.09, 0.16, g.open)
       });
     }
+    // Vùng khuôn mặt (elip) cho bộ làm mịn da
+    var top = P(10), chin = P(152), lc = P(234), rc = P(454);
+    var fdx = chin[0] - top[0], fdy = chin[1] - top[1], fl = Math.hypot(fdx, fdy) || 1;
+    out.face = {
+      cx: (top[0] + chin[0]) / 2, cy: (top[1] + chin[1]) / 2,
+      ax: [fdy / fl, -fdx / fl], ay: [fdx / fl, fdy / fl],    // trục ngang / dọc của mặt
+      rx: Math.hypot(rc[0] - lc[0], rc[1] - lc[1]) / 2 * 1.02, ry: fl / 2 * 1.08,
+      iod: IOD
+    };
     return out;
   };
+
+  /** Viền mí 16 điểm -> 32 điểm theo đường cong Catmull-Rom (mép mí cong mềm, không gãy khúc). */
+  function smoothPoly(pts) {
+    var n = pts.length, out = [];
+    for (var i = 0; i < n; i++) {
+      var p0 = pts[(i - 1 + n) % n], p1 = pts[i], p2 = pts[(i + 1) % n], p3 = pts[(i + 2) % n];
+      out.push(p1);
+      out.push([
+        (-p0[0] + 9 * p1[0] + 9 * p2[0] - p3[0]) / 16,
+        (-p0[1] + 9 * p1[1] + 9 * p2[1] - p3[1]) / 16
+      ]);
+    }
+    return out;
+  }
 
   /* ------------------------------------------------------------------ */
   /*  WebGL renderer                                                     */
@@ -230,12 +259,57 @@
     '}'
   ].join('\n');
 
+  // uFlip = 1 khi đọc từ framebuffer (ảnh lưu ngược trục Y so với ảnh tải từ video/canvas)
   var FS_VIDEO = [
     'precision highp float;',
     'varying vec2 vPos;',
     'uniform vec2 uSize;',
+    'uniform float uFlip;',
     'uniform sampler2D uVideo;',
-    'void main(){ gl_FragColor = vec4(texture2D(uVideo, vPos / uSize).rgb, 1.0); }'
+    'void main(){ vec2 t = vPos / uSize; gl_FragColor = vec4(texture2D(uVideo, vec2(t.x, mix(t.y, 1.0 - t.y, uFlip))).rgb, 1.0); }'
+  ].join('\n');
+
+  // Làm mịn da: lọc song phương (giữ cạnh) chỉ trên vùng da trong elip khuôn mặt
+  // -> mờ mụn/thâm/lỗ chân lông, giữ nét mắt, mi, lông mày, môi. Kèm nâng sáng da nhẹ.
+  var FS_BEAUTY = [
+    'precision highp float;',
+    'varying vec2 vPos;',
+    'uniform vec2 uSize;',
+    'uniform sampler2D uVideo;',
+    'uniform float uBeauty;',
+    'uniform vec2 uFC;',
+    'uniform vec2 uFAx;',
+    'uniform vec2 uFAy;',
+    'uniform vec2 uFR;',
+    'uniform float uRad;',
+    'float luma(vec3 c){ return dot(c, vec3(0.299, 0.587, 0.114)); }',
+    'vec3 tex(vec2 p){ return texture2D(uVideo, clamp(p, vec2(0.5), uSize - 0.5) / uSize).rgb; }',
+    'void main(){',
+    '  vec3 c = tex(vPos);',
+    '  vec2 d = vPos - uFC;',
+    '  vec2 q = vec2(dot(d, uFAx) / uFR.x, dot(d, uFAy) / uFR.y);',
+    '  float face = 1.0 - smoothstep(0.8, 1.05, length(q));',
+    '  float cb = 0.5 - 0.168736 * c.r - 0.331264 * c.g + 0.5 * c.b;',
+    '  float cr = 0.5 + 0.5 * c.r - 0.418688 * c.g - 0.081312 * c.b;',
+    '  float skin = smoothstep(0.50, 0.535, cr) * (1.0 - smoothstep(0.68, 0.72, cr))',
+    '             * smoothstep(0.26, 0.30, cb) * (1.0 - smoothstep(0.50, 0.54, cb))',
+    '             * smoothstep(0.10, 0.22, luma(c));',
+    '  float m = face * skin * uBeauty;',
+    '  if (m <= 0.01) { gl_FragColor = vec4(c, 1.0); return; }',
+    '  vec3 sum = c; float ws = 1.0;',
+    '  for (int i = 0; i < 16; i++) {',
+    '    float fi = float(i);',
+    '    float ang = fi * 2.39996;',
+    '    vec3 s = tex(vPos + vec2(cos(ang), sin(ang)) * uRad * sqrt((fi + 0.5) / 16.0));',
+    '    vec3 dc = s - c;',
+    '    float w = exp(-dot(dc, dc) * 55.0);',
+    '    sum += s * w; ws += w;',
+    '  }',
+    '  vec3 res = mix(c, sum / ws, m * 0.9);',
+    '  res = mix(res, res + (1.0 - res) * 0.07, m);',          // nâng sáng da nhẹ
+    '  res = mix(res, res * vec3(1.015, 1.0, 0.985), m * 0.6);', // tông ấm hồng hào
+    '  gl_FragColor = vec4(res, 1.0);',
+    '}'
   ].join('\n');
 
   var FS_LENS = [
@@ -247,7 +321,11 @@
     'uniform vec2 uCenter;',
     'uniform mat2 uFwd;',      // toạ độ mống mắt -> pixel
     'uniform mat2 uInv;',      // pixel -> toạ độ mống mắt (|l| = 1 tại viền mống mắt)
-    'uniform vec2 uPoly[17];', // viền mí mắt (điểm cuối = điểm đầu)
+    'uniform vec2 uPoly[33];', // viền mí mắt 32 điểm (điểm cuối = điểm đầu)
+    'uniform float uFlip;',
+    'uniform float uEdge;',
+    'uniform float uLimbal;',
+    'uniform float uLidShade;',
     'uniform float uFeather;',
     'uniform float uInset;',
     'uniform float uScale;',
@@ -260,13 +338,13 @@
     'uniform float uPull;',
     '',
     'float luma(vec3 c){ return dot(c, vec3(0.299, 0.587, 0.114)); }',
-    'vec3 vid(vec2 p){ return texture2D(uVideo, clamp(p, vec2(0.5), uSize - 0.5) / uSize).rgb; }',
+    'vec3 vid(vec2 p){ vec2 t = clamp(p, vec2(0.5), uSize - 0.5) / uSize; return texture2D(uVideo, vec2(t.x, mix(t.y, 1.0 - t.y, uFlip))).rgb; }',
     'vec3 vidL(vec2 l){ return vid(uCenter + uFwd * l); }',
     '',
     '// Khoảng cách có dấu tới viền mí mắt (dương = bên trong khe mắt)',
     'float polySD(vec2 p){',
     '  float d = 1e6; bool inside = false;',
-    '  for (int i = 0; i < 16; i++) {',
+    '  for (int i = 0; i < 32; i++) {',
     '    vec2 a = uPoly[i]; vec2 b = uPoly[i + 1];',
     '    vec2 e = b - a; vec2 w = p - a;',
     '    float h = clamp(dot(w, e) / max(dot(e, e), 1e-4), 0.0, 1.0);',
@@ -284,7 +362,7 @@
     '  vec2 l = uInv * (vPos - uCenter);',
     '  float rr = length(l);',
     '  float rl = rr / uScale;',
-    '  float inLens = 1.0 - smoothstep(0.965, 1.0, rl);',
+    '  float inLens = 1.0 - smoothstep(1.0 - uEdge, 1.0, rl);', // mép lens hoà dần vào mắt thật, không viền cứng
     '  if (inLens <= 0.0) { gl_FragColor = vec4(base, 1.0); return; }',
     '  float sd = polySD(vPos);',
     '  float lid = smoothstep(uInset, uInset + uFeather, sd);',
@@ -313,17 +391,20 @@
     '  float L = luma(base);',
     '  float spec = smoothstep(meanL * 1.5 + 0.10, meanL * 1.5 + 0.32, L);',
     '',
-    '  // Cắt theo MÉP MÍ THẬT trong ảnh: phía trên/dưới mống mắt, pixel sáng như da/tròng trắng = mí che',
+    '  // Tinh chỉnh mép mí theo ảnh thật – CHỈ trong dải hẹp sát viền mí (sửa sai số của viền MediaPipe).',
+    '  // Bên trong khe mắt lens phủ trọn, không bị xén theo phần tròng đen lộ ra.',
     '  float contrast = smoothstep(0.06, 0.18, sl - irisRef);',
     '  float T = mix(irisRef, sl, 0.5);',
     '  float skin = smoothstep(T - 0.05, T + 0.07, L);',
     '  float vw = smoothstep(0.3, 0.75, abs(l.y));',
-    '  a0 *= 1.0 - skin * vw * contrast * uLidLuma * (1.0 - spec);',
+    '  float band = 1.0 - smoothstep(uFeather, uFeather * 2.5, sd);',
+    '  a0 *= 1.0 - skin * vw * band * contrast * uLidLuma * (1.0 - spec);',
     '  if (a0 <= 0.002) { gl_FragColor = vec4(base, 1.0); return; }',
     '',
     '  // Con ngươi co giãn theo ánh sáng (tối -> to, sáng -> nhỏ)',
     '  float pr = uPupil * mix(1.3, 0.85, light);',
-    '  float a = lens.a * a0 * smoothstep(pr * 0.82, pr * 1.12, rr) * uOpacity;',
+    '  // Độ đậm tự nhiên: ánh sáng yếu -> màu lens kém nổi như ngoài đời',
+    '  float a = lens.a * a0 * smoothstep(pr * 0.82, pr * 1.12, rr) * uOpacity * mix(0.82, 1.0, light);',
     '',
     '  // Màu lens: giảm bão hoà + kéo độ sáng về mống mắt thật -> như mực in trên lens, không phải miếng dán',
     '  vec3 lc = lens.rgb / max(lens.a, 0.001);',
@@ -334,10 +415,10 @@
     '  vec3 lit = lc * mix(0.6, 1.0, light) * tint * mix(1.0, detail, 0.35);',
     '',
     '  // Chiều sâu: viền tối mờ dần ở rìa (limbal ring) + bóng mi/mí trên đổ xuống mống mắt',
-    '  lit *= 1.0 - 0.38 * smoothstep(0.72, 0.98, rl);',
-    '  float upper = smoothstep(0.1, -0.7, l.y);',
-    '  float nearLid = 1.0 - smoothstep(0.0, uFeather * 3.0 + 2.0, sd);',
-    '  lit *= 1.0 - 0.34 * max(nearLid * mix(0.45, 1.0, upper), upper * 0.4);',
+    '  lit *= 1.0 - uLimbal * smoothstep(0.7, 0.97, rl);',
+    '  float upper = smoothstep(0.2, -0.8, l.y);',
+    '  float nearLid = 1.0 - smoothstep(0.0, uFeather * 5.0 + 3.0, sd);',
+    '  lit *= 1.0 - uLidShade * max(nearLid * mix(0.4, 1.0, upper), upper * 0.5);',
     '  vec3 col = mix(base, lit, a);',
     '',
     '  // Con ngươi đen, rõ',
@@ -391,10 +472,14 @@
     this.canvas = canvas;
     this.pVideo = program(gl, VS, FS_VIDEO);
     this.pLens = program(gl, VS, FS_LENS);
+    this.pBeauty = program(gl, VS, FS_BEAUTY);
     this.buf = gl.createBuffer();
     this.videoTex = this._tex(false);
+    this.fboTex = this._tex(false);
+    this.fbo = gl.createFramebuffer();
+    this.fboOk = false;
     this.W = 0; this.H = 0;
-    this.polyArr = new Float32Array(34);
+    this.polyArr = new Float32Array(66);
     this.quad = new Float32Array(12);
   }
   Renderer.prototype._tex = function (mip) {
@@ -419,7 +504,15 @@
     if (W === this.W && H === this.H) return;
     this.W = W; this.H = H;
     this.canvas.width = W; this.canvas.height = H;
-    this.gl.viewport(0, 0, W, H);
+    var gl = this.gl;
+    gl.viewport(0, 0, W, H);
+    // Bộ đệm ảnh đã làm đẹp (lens sẽ đọc từ đây -> da quanh mắt cũng được làm mịn đồng nhất)
+    gl.bindTexture(gl.TEXTURE_2D, this.fboTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.fboTex, 0);
+    this.fboOk = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   };
   Renderer.prototype._drawQuad = function (x0, y0, x1, y1) {
     var gl = this.gl, q = this.quad;
@@ -435,15 +528,38 @@
    * Vẽ 1 khung: video + lens trên cùng một khung hình mà landmarks được tính
    * (không lệch thời gian giữa ảnh và lens).
    */
-  Renderer.prototype.render = function (video, eyes, lens, time) {
+  Renderer.prototype.render = function (video, eyes, lens, time, beauty) {
     var gl = this.gl, W = this.W, H = this.H;
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.videoTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video);
 
+    // Bước 1: làm mịn da -> framebuffer. Bước 2: chép ra màn hình. Bước 3: vẽ lens (đọc ảnh đã làm đẹp).
+    var face = eyes && eyes.face;
+    var useBeauty = this.fboOk && face && beauty > 0;
+    var srcFlip = 0;
+    if (useBeauty) {
+      var pb = this.pBeauty, ub = pb.u;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
+      gl.useProgram(pb.p);
+      gl.uniform2f(ub.uSize, W, H);
+      gl.uniform1i(ub.uVideo, 0);
+      gl.uniform1f(ub.uBeauty, beauty);
+      gl.uniform2f(ub.uFC, face.cx, face.cy);
+      gl.uniform2f(ub.uFAx, face.ax[0], face.ax[1]);
+      gl.uniform2f(ub.uFAy, face.ay[0], face.ay[1]);
+      gl.uniform2f(ub.uFR, face.rx, face.ry);
+      gl.uniform1f(ub.uRad, Math.max(2, face.iod * 0.075));
+      this._drawQuad(0, 0, W, H);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.bindTexture(gl.TEXTURE_2D, this.fboTex);
+      srcFlip = 1;
+    }
+
     var pv = this.pVideo;
     gl.useProgram(pv.p);
     gl.uniform2f(pv.u.uSize, W, H);
+    gl.uniform1f(pv.u.uFlip, srcFlip);
     gl.uniform1i(pv.u.uVideo, 0);
     this._drawQuad(0, 0, W, H);
 
@@ -452,6 +568,10 @@
     gl.useProgram(pl.p);
     gl.uniform2f(u.uSize, W, H);
     gl.uniform1i(u.uVideo, 0);
+    gl.uniform1f(u.uFlip, srcFlip);
+    gl.uniform1f(u.uEdge, TUNE.edgeSoft);
+    gl.uniform1f(u.uLimbal, TUNE.limbal);
+    gl.uniform1f(u.uLidShade, TUNE.lidShade);
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, lens.tex);
     gl.uniform1i(u.uLens, 1);
@@ -471,8 +591,8 @@
       gl.uniform2f(u.uCenter, e.cx, e.cy);
       gl.uniformMatrix2fv(u.uFwd, false, [Ux, Uy, Vx, Vy]);
       gl.uniformMatrix2fv(u.uInv, false, [Vy / det, -Uy / det, -Vx / det, Ux / det]);
-      for (var k = 0; k < 17; k++) {
-        var p = e.poly[k % 16];
+      for (var k = 0; k < 33; k++) {
+        var p = e.poly[k % 32];
         this.polyArr[k * 2] = p[0]; this.polyArr[k * 2 + 1] = p[1];
       }
       gl.uniform2fv(u.uPoly, this.polyArr);
@@ -519,12 +639,35 @@
         var ctx = c.getContext('2d');
         var cx = bx + bw / 2, cy = by + bh / 2;
         ctx.drawImage(img, cx - size / 2, cy - size / 2, size, size, 0, 0, S, S);
+        c.lensAuto = autoOpacityFor(c);
         resolve(c);
       };
       img.onerror = function () { delete imageCache[url]; reject(new Error('Không tải được ảnh lens: ' + url)); };
       img.src = url;
     });
     return imageCache[url];
+  }
+
+  /**
+   * Độ đậm tự nhiên cho từng mẫu lens: lens càng sáng / màu càng rực thì phủ càng mỏng
+   * (lens thật in mực dạng chấm, trên mắt tối màu luôn để lộ một phần mống mắt thật).
+   */
+  function autoOpacityFor(canvas) {
+    try {
+      var s = 64, t = document.createElement('canvas'); t.width = s; t.height = s;
+      var x = t.getContext('2d'); x.drawImage(canvas, 0, 0, s, s);
+      var d = x.getImageData(0, 0, s, s).data, sumL = 0, sumS = 0, n = 0;
+      for (var i = 0; i < d.length; i += 4) {
+        if (d[i + 3] < 80) continue;
+        var r = d[i] / 255, g = d[i + 1] / 255, b = d[i + 2] / 255;
+        sumL += 0.299 * r + 0.587 * g + 0.114 * b;
+        sumS += Math.max(r, g, b) - Math.min(r, g, b);
+        n++;
+      }
+      if (!n) return 0.8;
+      var L = sumL / n, S = sumS / n;
+      return clamp(0.92 - 0.26 * smoothstep(0.25, 0.65, L) - 0.12 * smoothstep(0.15, 0.5, S), 0.5, 0.92);
+    } catch (e) { return 0.8; }
   }
 
   /* ------------------------------------------------------------------ */
@@ -606,6 +749,7 @@
     camera: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
     eye: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
     compare: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M5 7h4v10H5zM15 7h4v10h-4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>',
+    sparkle: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM18.5 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z" fill="currentColor"/></svg>',
     cart: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h2l2.4 11h10.2L20 7H6.3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/><circle cx="9" cy="19" r="1.4" fill="currentColor"/><circle cx="17" cy="19" r="1.4" fill="currentColor"/></svg>',
     lock: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 11V8a4 4 0 018 0v3" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>'
   };
@@ -620,6 +764,7 @@
     this.landmarker = null;
     this.comparing = false;
     this.userOpacity = TUNE.opacityDefault;
+    this.beautyOn = TUNE.beauty > 0;
     this.shotRequested = false;
     this.lastVideoTime = -1;
     this.noFaceSince = 0;
@@ -671,6 +816,7 @@
           '<button type="button" class="lto-icon-btn lto-close" aria-label="' + esc(T.close) + '">' + ICON.close + '</button>' +
           '<div class="lto-tools" hidden>' +
             '<button type="button" class="lto-icon-btn lto-compare" aria-label="' + esc(T.compare) + '" title="' + esc(T.compare) + '">' + ICON.compare + '</button>' +
+            '<button type="button" class="lto-icon-btn lto-beauty' + (TUNE.beauty > 0 ? ' is-active' : '') + '" aria-pressed="' + (TUNE.beauty > 0) + '" aria-label="' + esc(T.beauty) + '" title="' + esc(T.beauty) + '">' + ICON.sparkle + '</button>' +
             '<button type="button" class="lto-icon-btn lto-capture" aria-label="' + esc(T.capture) + '" title="' + esc(T.capture) + '">' + ICON.camera + '</button>' +
           '</div>' +
           '<div class="lto-toast" hidden></div>' +
@@ -702,6 +848,11 @@
     q('.lto-retry').addEventListener('click', function () { self.start(); });
     root.addEventListener('click', function (ev) { if (ev.target === root) self.close(); });
     q('.lto-capture').addEventListener('click', function () { self.shotRequested = true; });
+    q('.lto-beauty').addEventListener('click', function () {
+      self.beautyOn = !self.beautyOn;
+      this.classList.toggle('is-active', self.beautyOn);
+      this.setAttribute('aria-pressed', String(self.beautyOn));
+    });
     q('.lto-retake').addEventListener('click', function () { self._hideShot(); });
     this.ui.add.addEventListener('click', function () { self._addToCart(); });
     this.ui.range.addEventListener('input', function () { self.userOpacity = this.value / 100; });
@@ -785,6 +936,7 @@
     lens._loading = loadLensCanvas(lens.image).then(function (canvas) {
       if (!self.renderer) { lens._loading = null; return lens; }
       lens.tex = self.renderer.createLensTexture(canvas);
+      lens.auto = canvas.lensAuto || 0.8;
       lens._loading = null;
       return lens;
     }, function (err) { lens._loading = null; throw err; });
@@ -1001,9 +1153,13 @@
 
       var lens = this.current, params = null;
       if (lens && lens.tex && !this.comparing) {
-        params = { tex: lens.tex, scale: lens.scale, opacity: lens.opacity * this.userOpacity, pupil: lens.pupil };
+        // Độ đậm: mặc định = mức tự nhiên tự tính cho mẫu lens; thanh "Độ đậm" chỉnh tương đối quanh mức đó
+        // (75% = tự nhiên). Admin vẫn có thể đặt độ phủ riêng cho sản phẩm (so với mặc định 0.92).
+        var op = TUNE.autoOpacity ? (lens.auto || 0.8) * (lens.opacity / 0.92) * (this.userOpacity / TUNE.opacityDefault)
+                                  : lens.opacity * this.userOpacity;
+        params = { tex: lens.tex, scale: lens.scale, opacity: clamp(op, 0, 1), pupil: lens.pupil };
       }
-      this.renderer.render(frame, eyes, params, t);
+      this.renderer.render(frame, eyes, params, t, this.beautyOn ? TUNE.beauty : 0);
 
       if (this.shotRequested) { this.shotRequested = false; this._capture(); }
       this._tickFps(now);
