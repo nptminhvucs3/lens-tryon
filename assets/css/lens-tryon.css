@@ -1,0 +1,151 @@
+/* Lens Try-On – giao diện thử lens */
+.lto-modal {
+  --lto-accent: #d6336c;
+  --lto-accent-ink: #fff;
+  --lto-bg: #111214;
+  --lto-panel: #ffffff;
+  --lto-ink: #1d1d1f;
+  --lto-muted: #6b6b73;
+  --lto-line: #e6e6ea;
+  position: fixed; inset: 0; z-index: 999999;
+  display: none; align-items: center; justify-content: center;
+  background: rgba(10, 10, 12, .72);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  color: var(--lto-ink);
+  -webkit-tap-highlight-color: transparent;
+}
+.lto-modal.is-open { display: flex; }
+html.lto-lock, html.lto-lock body { overflow: hidden !important; }
+.lto-modal *, .lto-modal *::before, .lto-modal *::after { box-sizing: border-box; }
+.lto-modal [hidden] { display: none !important; }
+
+.lto-panel {
+  position: relative; display: flex; flex-direction: column;
+  width: min(960px, 94vw); height: min(760px, 92vh);
+  background: var(--lto-panel); border-radius: 18px; overflow: hidden;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .45);
+}
+
+/* ---------- Khung camera ---------- */
+.lto-stage { position: relative; flex: 1; min-height: 0; background: var(--lto-bg); overflow: hidden; }
+.lto-video { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.lto-canvas {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; transform: scaleX(-1);  /* soi gương */
+  opacity: 0; transition: opacity .3s;
+}
+.lto-modal.is-running .lto-canvas { opacity: 1; }
+
+.lto-consent, .lto-error, .lto-status {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; text-align: center;
+  padding: 32px 24px; color: #f4f4f6; gap: 14px;
+}
+.lto-consent h3 { margin: 0; font-size: 22px; line-height: 1.3; color: #fff; font-weight: 700; }
+.lto-consent p, .lto-error p { margin: 0; max-width: 420px; line-height: 1.55; font-size: 15px; color: #c9c9cf; }
+.lto-consent-icon { width: 64px; height: 64px; border-radius: 50%; display: grid; place-items: center; background: rgba(255,255,255,.08); color: #fff; }
+.lto-consent-icon svg { width: 34px; height: 34px; }
+.lto-privacy { display: inline-flex; align-items: center; gap: 6px; font-size: 13px !important; color: #9d9da6 !important; }
+.lto-privacy svg { width: 15px; height: 15px; }
+.lto-status { background: rgba(0, 0, 0, .35); }
+.lto-status p { margin: 0; font-size: 15px; }
+.lto-spinner {
+  width: 38px; height: 38px; border-radius: 50%;
+  border: 3px solid rgba(255,255,255,.25); border-top-color: #fff;
+  animation: lto-spin .8s linear infinite;
+}
+@keyframes lto-spin { to { transform: rotate(360deg); } }
+
+.lto-guide { position: absolute; inset: 0; pointer-events: none; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.lto-oval { width: min(54%, 300px); aspect-ratio: 3 / 4; border: 2px dashed rgba(255,255,255,.7); border-radius: 50%; }
+.lto-guide-text { margin: 14px 0 0; padding: 6px 14px; border-radius: 99px; background: rgba(0,0,0,.55); color: #fff; font-size: 14px; }
+
+/* ---------- Nút ---------- */
+.lto-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 44px; padding: 0 20px; border-radius: 999px; border: 1px solid var(--lto-line);
+  background: #fff; color: var(--lto-ink); font: 600 15px/1 inherit; font-family: inherit;
+  cursor: pointer; text-decoration: none; white-space: nowrap; transition: transform .1s, opacity .2s;
+}
+.lto-btn:active { transform: scale(.97); }
+.lto-btn svg { width: 20px; height: 20px; flex: none; }
+.lto-btn-primary { background: var(--lto-accent); border-color: var(--lto-accent); color: var(--lto-accent-ink); }
+.lto-btn:disabled, .lto-btn.is-disabled { opacity: .5; cursor: not-allowed; }
+.lto-btn:focus-visible, .lto-icon-btn:focus-visible, .lto-swatch:focus-visible { outline: 3px solid #5b9dff; outline-offset: 2px; }
+
+.lto-icon-btn {
+  width: 44px; height: 44px; border-radius: 50%; border: 0; padding: 0;
+  display: grid; place-items: center; cursor: pointer;
+  background: rgba(0, 0, 0, .45); color: #fff; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  touch-action: none; user-select: none; -webkit-user-select: none;
+}
+.lto-icon-btn svg { width: 22px; height: 22px; }
+.lto-icon-btn.is-active { background: var(--lto-accent); }
+.lto-close { position: absolute; top: 12px; right: 12px; z-index: 3; }
+.lto-tools { position: absolute; right: 12px; bottom: 14px; display: flex; flex-direction: column; gap: 10px; z-index: 2; }
+.lto-capture { width: 56px; height: 56px; background: #fff; color: #111; }
+.lto-capture svg { width: 26px; height: 26px; }
+
+.lto-toast {
+  position: absolute; left: 50%; top: 16px; transform: translateX(-50%); z-index: 4;
+  padding: 10px 16px; border-radius: 12px; background: rgba(20,20,22,.9); color: #fff; font-size: 14px; max-width: 86%;
+}
+.lto-toast a { color: #fff; font-weight: 700; text-decoration: underline; }
+.lto-debug { position: absolute; left: 8px; top: 8px; color: #0f0; font: 12px monospace; background: rgba(0,0,0,.5); padding: 2px 6px; }
+
+/* ---------- Ảnh chụp ---------- */
+.lto-shot { position: absolute; inset: 0; z-index: 5; background: rgba(0,0,0,.88); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 20px; }
+.lto-shot img { max-width: 100%; max-height: calc(100% - 80px); border-radius: 12px; }
+.lto-shot-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+
+/* ---------- Thanh chọn lens ---------- */
+.lto-bar { flex: none; border-top: 1px solid var(--lto-line); padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); background: var(--lto-panel); }
+.lto-list { display: flex; gap: 10px; overflow-x: auto; padding: 4px 2px 10px; scroll-snap-type: x proximity; scrollbar-width: thin; }
+.lto-swatch {
+  flex: none; width: 72px; display: flex; flex-direction: column; align-items: center; gap: 4px;
+  border: 0; background: none; padding: 0; cursor: pointer; color: var(--lto-ink); scroll-snap-align: center;
+}
+.lto-swatch.lto-group-start { margin-left: 12px; position: relative; }
+.lto-swatch.lto-group-start::before { content: ""; position: absolute; left: -12px; top: 8px; height: 46px; border-left: 1px solid var(--lto-line); }
+.lto-swatch-img { width: 60px; height: 60px; border-radius: 50%; overflow: hidden; border: 2px solid var(--lto-line); padding: 2px; background: #f4f4f6; transition: border-color .15s, transform .15s; }
+.lto-swatch-img img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; display: block; }
+.lto-swatch.is-selected .lto-swatch-img { border-color: var(--lto-accent); transform: scale(1.06); }
+.lto-swatch-name { font-size: 11.5px; line-height: 1.25; text-align: center; max-width: 72px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; color: var(--lto-muted); }
+.lto-swatch.is-selected .lto-swatch-name { color: var(--lto-ink); font-weight: 600; }
+
+.lto-row { display: flex; align-items: center; gap: 16px; }
+.lto-info { flex: 1; min-width: 0; }
+.lto-name { font-weight: 700; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lto-meta { display: flex; gap: 10px; font-size: 13px; color: var(--lto-muted); margin-top: 2px; }
+.lto-price { color: var(--lto-accent); font-weight: 700; }
+.lto-price del { color: var(--lto-muted); font-weight: 400; margin-right: 4px; }
+.lto-price ins { text-decoration: none; }
+.lto-intensity { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--lto-muted); width: 130px; }
+.lto-intensity input { width: 100%; accent-color: var(--lto-accent); }
+
+/* ---------- Nút trên trang sản phẩm ---------- */
+.lens-tryon-button {
+  display: inline-flex !important; align-items: center; gap: 8px; margin: 12px 0;
+  padding: 12px 22px; border-radius: 999px; border: 2px solid currentColor;
+  background: transparent; color: var(--lens-tryon-accent, #d6336c); font-weight: 700; font-size: 15px; line-height: 1.2; cursor: pointer;
+  text-decoration: none;
+}
+.lens-tryon-button svg { width: 20px; height: 20px; }
+.lens-tryon-button:hover { background: var(--lens-tryon-accent, #d6336c); color: #fff; border-color: var(--lens-tryon-accent, #d6336c); }
+
+/* ---------- Điện thoại: toàn màn hình ---------- */
+@media (max-width: 720px) {
+  .lto-modal { background: #000; }
+  .lto-panel { width: 100vw; height: 100vh; height: 100dvh; border-radius: 0; }
+  .lto-close { top: calc(10px + env(safe-area-inset-top)); }
+  .lto-bar { padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); }
+  .lto-row { flex-wrap: wrap; gap: 10px; }
+  .lto-info { flex-basis: 100%; }
+  .lto-intensity { flex: 1; width: auto; }
+  .lto-add { flex: 1.3; }
+  .lto-swatch { width: 64px; }
+  .lto-swatch-img { width: 54px; height: 54px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lto-canvas, .lto-swatch-img, .lto-btn { transition: none; }
+}
