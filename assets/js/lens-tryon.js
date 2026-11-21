@@ -11,8 +11,10 @@
     irisMM: 11.8,          // đường kính mống mắt trung bình (mm) – để quy đổi GDIA sản phẩm sang tỉ lệ
     maxScale: 1.25,        // kích thước lens = GDIA / irisMM (lens giãn tròng to hơn tròng đen thật), giới hạn trên
     irisFit: 1.0,          // hệ số chỉnh ước lượng mống mắt của MediaPipe
-    edgeSoft: 0.05,        // mép lens hơi mềm (chỉ khử răng cưa, giữ đúng viền như ảnh sản phẩm)
-    lidShade: 0.35,        // bóng hàng mi trên đổ xuống lens sát mép mí (như TikTok)
+    edgeSoft: 0.12,        // mép lens mềm, hoà dần vào tròng trắng
+    lidShade: 0.4,         // bóng mí + hàng mi trên đổ xuống lens
+    catchlight: 0.55,      // độ sáng đốm phản chiếu trên giác mạc (0 = tắt)
+    narrowFit: 1.02,       // cỡ lens (so với tròng đen) khi mắt nheo/khép hờ – lens thu dần về cỡ này
     beauty: 0.6,           // 0–1: làm mịn da (0 = tắt)
     // Khử rung kiểu "vùng chết": dịch chuyển nhỏ hơn ngưỡng bị dập, lớn hơn đi thẳng (không trễ)
     irisJitter: 0.06,      // ngưỡng rung tâm mống mắt (theo bán kính mống mắt)
@@ -114,6 +116,7 @@
       this.eyes.forEach(function (s) { s.c.reset(); });
     }
     if (t - this.lastSeen > 3) { this.ratio = null; this.n = 0; }
+    if (t - this.lastSeen > 0.25) { this.fadeS = null; this.wideS = null; }
   };
   Tracker.prototype.update = function (lm, matrix, W, H, t) {
     var self = this;
@@ -199,6 +202,19 @@
     var avg = [(L[0][0] + L[1][0]) / 2, (L[0][1] + L[1][1]) / 2];
     var w = TUNE.gazeShare;
 
+    // Độ hiện lens DÙNG CHUNG cho 2 mắt (theo độ mở trung bình), chuyển mượt theo thời gian:
+    // trước đây mỗi mắt tự bật/tắt theo độ mở riêng -> một mắt mất lens, mắt kia còn.
+    var openAvg = (G[0].open + G[1].open) / 2;
+    // Lens vẫn hiện rõ khi nheo mắt; chỉ ẩn khi mắt gần nhắm hẳn.
+    var fadeT = smoothstep(0.05, 0.10, openAvg);
+    // Mắt càng hẹp, lens càng thu về cỡ tròng đen thật: không còn dải chữ nhật lòi ra tròng trắng.
+    var wideT = smoothstep(0.17, 0.30, openAvg);
+    var dt = this.lastT ? clamp(t - this.lastT, 0, 0.5) : 1;
+    this.lastT = t;
+    var ease = 1 - Math.exp(-dt / 0.08);
+    this.fadeS = this.fadeS == null ? fadeT : this.fadeS + (fadeT - this.fadeS) * ease;
+    this.wideS = this.wideS == null ? wideT : this.wideS + (wideT - this.wideS) * ease;
+
     var out = [];
     for (var i = 0; i < 2; i++) {
       var g = G[i];
@@ -212,7 +228,10 @@
       var c = this.eyes[i].c.f(C2, Math.max(0.35, r * TUNE.irisJitter));
       out.push({
         cx: c[0], cy: c[1], ux: g.ux, uy: g.uy, vx: g.vx, vy: g.vy, ru: r, rv: rv,
-        poly: smoothPoly(g.poly), D: g.D, fade: smoothstep(0.09, 0.16, g.open)
+        poly: smoothPoly(g.poly), D: g.D, fade: this.fadeS, wide: this.wideS,
+        // Chỉ nới mép mí trên lên sát hàng mi khi mắt mở rõ. Mắt khép hờ / cúi mặt: viền mí MediaPipe
+        // đã lệch lên trên sẵn, nới thêm sẽ vẽ lens lên da mí (lỗ đồng tử lộ màu da).
+        lidUp: smoothstep(0.18, 0.28, g.open)
       });
     }
     // Vùng khuôn mặt (elip) cho bộ làm mịn da
@@ -329,6 +348,7 @@
     'uniform float uPupil;',
     'uniform float uFade;',
     'uniform float uTime;',
+    'uniform float uCatch;',
     '',
     'float luma(vec3 c){ return dot(c, vec3(0.299, 0.587, 0.114)); }',
     'vec3 vid(vec2 p){ vec2 t = clamp(p, vec2(0.5), uSize - 0.5) / uSize; return texture2D(uVideo, vec2(t.x, mix(t.y, 1.0 - t.y, uFlip))).rgb; }',
@@ -363,20 +383,29 @@
     '  float lid = smoothstep(inset - uFeather * 0.5, inset + uFeather * 0.5, sd);',
     '  if (lid <= 0.0) { gl_FragColor = vec4(base, 1.0); return; }',
     '  vec4 lens = texture2D(uLens, l / uScale * 0.5 + 0.5);',
-    '  float pupil = smoothstep(uPupil * 0.85, uPupil * 1.1, rl);', // lỗ con ngươi của lens -> thấy con ngươi thật
+    '  // Lỗ con ngươi mờ dần (đồng tử thật không có viền cắt cứng)',
+    '  float pupil = smoothstep(uPupil * 0.7, uPupil * 1.25, rl);',
     '  float a = lens.a * inLens * lid * pupil * uOpacity * uFade;',
-    '  if (a <= 0.002) { gl_FragColor = vec4(base, 1.0); return; }',
+    '  float g = inLens * lid * uFade;',            // độ phủ hình học (dùng cho ánh sáng)
     '  vec3 col = lens.rgb / max(lens.a, 0.001);', // đúng màu ảnh sản phẩm (texture premultiplied)
     '',
-    '  // Bóng mí trên đổ xuống lens, chỉ sát mép mí trên (như TikTok) – lens nằm "dưới" mí',
-    '  float nearLid = 1.0 - smoothstep(0.0, uFeather * 6.0 + 2.0, sd - inset);',
-    '  col *= 1.0 - uLidShade * nearLid * nearLid * upper;',
-    '',
+    '  // Bóng mí + hàng mi trên đổ xuống lens: rõ, mờ dần xuống dưới – lens nằm "dưới" mí',
+    '  float nearLid = 1.0 - smoothstep(0.0, uFeather * 7.0 + 3.0, sd - inset);',
+    '  float shade = uLidShade * nearLid * upper;',
+    '  col *= 1.0 - shade;',
     '  col = mix(base, col, a);',
+    '  col *= 1.0 - shade * 0.5 * g * (1.0 - a);', // bóng cả trên phần mắt thật lộ ra giữa các chấm in
     '',
-    '  // Giữ đốm phản chiếu thật trên giác mạc (chỉ trong vùng mống mắt thật, không lấy tròng trắng)',
-    '  float spec = smoothstep(0.78, 0.92, luma(base)) * (1.0 - smoothstep(0.75, 0.9, rr));',
+    '  // Đồng tử thật tối hơn chút ở giữa -> chiều sâu',
+    '  col *= 1.0 - 0.25 * g * (1.0 - smoothstep(0.0, uPupil * 0.9, rl));',
+    '',
+    '  // Điểm sáng phản chiếu: giữ đốm sáng thật + thêm một đốm mềm cố định trên giác mạc (2 mắt cùng hướng)',
+    '  float spec = smoothstep(0.62, 0.85, luma(base)) * (1.0 - smoothstep(0.75, 0.9, rr));',
     '  col = mix(col, max(col, base), spec);',
+    '  vec2 hp = l - vec2(-0.32, -0.36);',
+    '  float hl = exp(-dot(hp, hp) / 0.012) * uCatch * g * (1.0 - shade * 1.5);',
+    '  col += (1.0 - col) * clamp(hl, 0.0, 1.0);',
+    '  if (g <= 0.002) { gl_FragColor = vec4(base, 1.0); return; }',
     '',
     '  // Hạt nhiễu rất nhẹ cho khớp với nhiễu camera',
     '  float nz = fract(sin(dot(vPos + uTime, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;',
@@ -519,6 +548,7 @@
     gl.uniform1f(u.uFlip, srcFlip);
     gl.uniform1f(u.uEdge, TUNE.edgeSoft);
     gl.uniform1f(u.uLidShade, TUNE.lidShade);
+    gl.uniform1f(u.uCatch, TUNE.catchlight);
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, lens.tex);
     gl.uniform1i(u.uLens, 1);
@@ -544,10 +574,14 @@
       // Viền mí MediaPipe thường nằm lệch vào trong mép mí thật -> nới ra (inset âm),
       // phần thừa sẽ được cắt chính xác theo độ sáng ảnh trong shader.
       gl.uniform1f(u.uFeather, Math.max(1.0, e.D * TUNE.lidFeather));
-      gl.uniform1f(u.uInset, -e.D * TUNE.lidExpand);
+      gl.uniform1f(u.uInset, -e.D * TUNE.lidExpand * (e.lidUp == null ? 1 : e.lidUp));
       gl.uniform1f(u.uInsetLow, -e.D * TUNE.lidExpandLow);
       gl.uniform1f(u.uFade, e.fade);
-      var half = Math.max(e.ru, e.rv) * Math.max(lens.scale, 1) * 1.08 + 2;
+      // Cỡ lens: theo GDIA khi mắt mở, thu dần về cỡ tròng đen khi mắt nheo/khép hờ
+      var narrow = Math.min(lens.scale, TUNE.narrowFit);
+      var sc = narrow + (lens.scale - narrow) * (e.wide == null ? 1 : e.wide);
+      gl.uniform1f(u.uScale, sc);
+      var half = Math.max(e.ru, e.rv) * Math.max(sc, 1) * 1.08 + 2;
       this._drawQuad(e.cx - half, e.cy - half, e.cx + half, e.cy + half);
     }
   };
@@ -584,12 +618,34 @@
         var ctx = c.getContext('2d');
         var cx = bx + bw / 2, cy = by + bh / 2;
         ctx.drawImage(img, cx - size / 2, cy - size / 2, size, size, 0, 0, S, S);
+        keyBlackBackground(ctx, S);
         resolve(c);
       };
       img.onerror = function () { delete imageCache[url]; reject(new Error('Không tải được ảnh lens: ' + url)); };
       img.src = url;
     });
     return imageCache[url];
+  }
+
+  /**
+   * Ảnh lens nền đen (không có kênh trong suốt, hay gặp ở ảnh họa tiết in của nhà sản xuất):
+   * chuyển phần đen – nền và lỗ đồng tử – thành trong suốt; giữa các chấm in sẽ lộ mắt thật.
+   */
+  function keyBlackBackground(ctx, S) {
+    try {
+      var im = ctx.getImageData(0, 0, S, S), d = im.data, n = d.length / 4, transparent = 0;
+      for (var i = 3; i < d.length; i += 4 * 7) if (d[i] < 250) transparent++;
+      if (transparent > n / 7 * 0.02) return;   // ảnh đã có nền trong suốt
+      for (var j = 0; j < d.length; j += 4) {
+        var m = Math.max(d[j], d[j + 1], d[j + 2]);
+        var a = clamp((m - 12) / 60, 0, 1);
+        if (a <= 0) { d[j + 3] = 0; continue; }
+        var k = 1 / Math.max(a, 0.25);
+        d[j] = Math.min(255, d[j] * k); d[j + 1] = Math.min(255, d[j + 1] * k); d[j + 2] = Math.min(255, d[j + 2] * k);
+        d[j + 3] = Math.round(a * 255);
+      }
+      ctx.putImageData(im, 0, 0);
+    } catch (e) { /* ảnh khác domain không có CORS: giữ nguyên */ }
   }
 
   /* ------------------------------------------------------------------ */
